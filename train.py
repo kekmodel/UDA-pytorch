@@ -82,9 +82,9 @@ def de_interleave(x, size):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='PyTorch FixMatch Training')
+    parser = argparse.ArgumentParser()
     parser.add_argument('--gpu-id', default='0', type=int,
-                        help='id(s) for CUDA_VISIBLE_DEVICES')
+                        help='id for CUDA_VISIBLE_DEVICES')
     parser.add_argument('--num-workers', type=int, default=4,
                         help='number of workers')
     parser.add_argument('--dataset', default='cifar10', type=str,
@@ -96,7 +96,7 @@ def main():
                         help="expand labels to fit eval steps")
     parser.add_argument('--arch', default='wideresnet', type=str,
                         choices=['wideresnet', 'resnext'],
-                        help='dataset name')
+                        help='model architecture name')
     parser.add_argument('--total-steps', default=2**20, type=int,
                         help='number of total steps to run')
     parser.add_argument('--eval-step', default=1024, type=int,
@@ -128,11 +128,11 @@ def main():
     parser.add_argument('--out', default='result',
                         help='directory to output the result')
     parser.add_argument('--resume', default='', type=str,
-                        help='path to latest checkpoint (default: none)')
+                        help='path to checkpoint')
     parser.add_argument('--seed', default=None, type=int,
                         help="random seed")
     parser.add_argument("--amp", action="store_true",
-                        help="use 16-bit (mixed) precision through NVIDIA apex AMP")
+                        help="use 16-bit (mixed) precision")
     parser.add_argument("--opt_level", type=str, default="O1",
                         help="apex AMP optimization level selected in ['O0', 'O1', 'O2', and 'O3']."
                         "See details at https://nvidia.github.io/apex/amp.html")
@@ -143,16 +143,15 @@ def main():
     global best_acc
 
     if args.local_rank != -1:
-        args.gpu = args.local_rank
+        args.gpu_id = args.local_rank
         torch.distributed.init_process_group(backend='nccl')
         args.world_size = torch.distributed.get_world_size()
         args.n_gpu = 1
     else:
-        args.gpu = 0
         args.world_size = 1
         args.n_gpu = torch.cuda.device_count()
 
-    args.device = torch.device('cuda', args.gpu)
+    args.device = torch.device('cuda', args.gpu_id)
 
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s -   %(message)s",
