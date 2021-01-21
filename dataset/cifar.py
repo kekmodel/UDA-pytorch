@@ -42,7 +42,7 @@ def get_cifar10(args, root):
 
     train_unlabeled_dataset = CIFAR10SSL(
         root, train_unlabeled_idxs, train=True,
-        transform=TransformFixMatch(mean=cifar10_mean, std=cifar10_std))
+        transform=TransformUDA(mean=cifar10_mean, std=cifar10_std))
 
     test_dataset = datasets.CIFAR10(
         root, train=False, transform=transform_val, download=False)
@@ -76,7 +76,7 @@ def get_cifar100(args, root):
 
     train_unlabeled_dataset = CIFAR100SSL(
         root, train_unlabeled_idxs, train=True,
-        transform=TransformFixMatch(mean=cifar100_mean, std=cifar100_std))
+        transform=TransformUDA(mean=cifar100_mean, std=cifar100_std))
 
     test_dataset = datasets.CIFAR100(
         root, train=False, transform=transform_val, download=False)
@@ -88,7 +88,7 @@ def x_u_split(args, labels):
     label_per_class = args.num_labeled // args.num_classes
     labels = np.array(labels)
     labeled_idx = []
-    # unlabeled data: all data (https://github.com/kekmodel/FixMatch-pytorch/issues/10)
+    # unlabeled data: all data
     unlabeled_idx = np.array(range(len(labels)))
     for i in range(args.num_classes):
         idx = np.where(labels == i)[0]
@@ -105,7 +105,7 @@ def x_u_split(args, labels):
     return labeled_idx, unlabeled_idx
 
 
-class TransformFixMatch(object):
+class TransformUDA(object):
     def __init__(self, mean, std):
         self.weak = transforms.Compose([
             transforms.RandomHorizontalFlip(),

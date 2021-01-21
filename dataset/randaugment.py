@@ -15,6 +15,7 @@ from PIL import Image
 logger = logging.getLogger(__name__)
 
 PARAMETER_MAX = 10
+RESAMPLE_MODE = None
 
 
 def AutoContrast(img, **kwarg):
@@ -44,14 +45,14 @@ def Cutout(img, v, max_v, bias=0):
     return CutoutAbs(img, v)
 
 
-def CutoutAbs(img, v, **kwarg):
+def CutoutAbs(img, max_v, **kwarg):
     w, h = img.size
     x0 = np.random.uniform(0, w)
     y0 = np.random.uniform(0, h)
-    x0 = int(max(0, x0 - v / 2.))
-    y0 = int(max(0, y0 - v / 2.))
-    x1 = int(min(w, x0 + v))
-    y1 = int(min(h, y0 + v))
+    x0 = int(max(0, x0 - max_v / 2.))
+    y0 = int(max(0, y0 - max_v / 2.))
+    x1 = int(min(w, x0 + max_v))
+    y1 = int(min(h, y0 + max_v))
     xy = (x0, y0, x1, y1)
     # gray
     color = (127, 127, 127)
@@ -93,14 +94,14 @@ def ShearX(img, v, max_v, bias=0):
     v = _float_parameter(v, max_v) + bias
     if random.random() < 0.5:
         v = -v
-    return img.transform(img.size, PIL.Image.AFFINE, (1, v, 0, 0, 1, 0))
+    return img.transform(img.size, PIL.Image.AFFINE, (1, v, 0, 0, 1, 0), RESAMPLE_MODE)
 
 
 def ShearY(img, v, max_v, bias=0):
     v = _float_parameter(v, max_v) + bias
     if random.random() < 0.5:
         v = -v
-    return img.transform(img.size, PIL.Image.AFFINE, (1, 0, 0, v, 1, 0))
+    return img.transform(img.size, PIL.Image.AFFINE, (1, 0, 0, v, 1, 0), RESAMPLE_MODE)
 
 
 def Solarize(img, v, max_v, bias=0):
@@ -125,7 +126,7 @@ def TranslateX(img, v, max_v, bias=0):
     if random.random() < 0.5:
         v = -v
     v = int(v * img.size[0])
-    return img.transform(img.size, PIL.Image.AFFINE, (1, 0, v, 0, 1, 0))
+    return img.transform(img.size, PIL.Image.AFFINE, (1, 0, v, 0, 1, 0), RESAMPLE_MODE)
 
 
 def TranslateY(img, v, max_v, bias=0):
@@ -133,7 +134,19 @@ def TranslateY(img, v, max_v, bias=0):
     if random.random() < 0.5:
         v = -v
     v = int(v * img.size[1])
-    return img.transform(img.size, PIL.Image.AFFINE, (1, 0, 0, 0, 1, v))
+    return img.transform(img.size, PIL.Image.AFFINE, (1, 0, 0, 0, 1, v), RESAMPLE_MODE)
+
+
+def TranslateXAbs(img, max_v, **kwarg):
+    if random.random() > 0.5:
+        max_v = -max_v
+    return img.transform(img.size, PIL.Image.AFFINE, (1, 0, max_v, 0, 1, 0), RESAMPLE_MODE)
+
+
+def TranslateYAbs(img, max_v, **kwarg):
+    if random.random() > 0.5:
+        max_v = -max_v
+    return img.transform(img.size, PIL.Image.AFFINE, (1, 0, 0, 0, 1, max_v), RESAMPLE_MODE)
 
 
 def _float_parameter(v, max_v):
@@ -163,13 +176,14 @@ def fixmatch_augment_pool():
     return augs
 
 
-def my_augment_pool():
+def rand_augment_pool():
     # Test
     augs = [(AutoContrast, None, None),
             (Brightness, 1.8, 0.1),
             (Color, 1.8, 0.1),
             (Contrast, 1.8, 0.1),
-            (Cutout, 0.2, 0),
+            # (Cutout, 0.2, 0),
+            (CutoutAbs, 40, None),
             (Equalize, None, None),
             (Invert, None, None),
             (Posterize, 4, 4),
@@ -180,17 +194,22 @@ def my_augment_pool():
             (Solarize, 256, 0),
             (SolarizeAdd, 110, 0),
             (TranslateX, 0.45, 0),
-            (TranslateY, 0.45, 0)]
+            (TranslateY, 0.45, 0),
+            # (TranslateXAbs, 100, None),
+            # (TranslateYAbs, 100, None),
+            ]
     return augs
 
 
-class RandAugmentPC(object):
-    def __init__(self, n, m):
+class RandAugment(object):
+    def __init__(self, n, m, resample_mode=PIL.Image.BILINEAR):
         assert n >= 1
         assert 1 <= m <= 10
+        global RESAMPLE_MODE
+        RESAMPLE_MODE = resample_mode
         self.n = n
         self.m = m
-        self.augment_pool = my_augment_pool()
+        self.augment_pool = rand_augment_pool()
 
     def __call__(self, img):
         ops = random.choices(self.augment_pool, k=self.n)
@@ -198,14 +217,37 @@ class RandAugmentPC(object):
             prob = np.random.uniform(0.2, 0.8)
             if random.random() + prob >= 1:
                 img = op(img, v=self.m, max_v=max_v, bias=bias)
-        img = CutoutAbs(img, int(32*0.5))
+        return img
+
+
+class RandAugmentPC(object):
+    def __init__(self, n, m, resample_mode=PIL.Image.BILINEAR):
+        assert n >= 1
+        assert 1 <= m <= 10
+        global RESAMPLE_MODE
+        RESAMPLE_MODE = resample_mode
+        self.n = n
+        self.m = m
+        self.augment_pool = rand_augment_pool()
+
+    def __call__(self, img):
+        ops = random.choices(self.augment_pool, k=self.n)
+        for op, max_v, bias in ops:
+            prob = np.random.uniform(0.2, 0.8)
+            if random.random() + prob >= 1:
+                img = op(img, v=self.m, max_v=max_v, bias=bias)
+        # img = CutoutAbs(img, 16)
+        # cv = np.random.randint(1, self.m)
+        img = Cutout(img, self.m, 0.5)
         return img
 
 
 class RandAugmentMC(object):
-    def __init__(self, n, m):
+    def __init__(self, n, m, resample_mode=PIL.Image.BILINEAR):
         assert n >= 1
         assert 1 <= m <= 10
+        global RESAMPLE_MODE
+        RESAMPLE_MODE = resample_mode
         self.n = n
         self.m = m
         self.augment_pool = fixmatch_augment_pool()
@@ -216,5 +258,6 @@ class RandAugmentMC(object):
             v = np.random.randint(1, self.m)
             if random.random() < 0.5:
                 img = op(img, v=v, max_v=max_v, bias=bias)
-        img = CutoutAbs(img, int(32*0.5))
+        # img = CutoutAbs(img, 16)
+        img = Cutout(img, self.m, 0.5)
         return img

@@ -36,8 +36,24 @@ def set_seed(args):
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-    if args.n_gpu > 0:
-        torch.cuda.manual_seed_all(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+
+
+def create_model(args):
+    if args.arch == 'wideresnet':
+        import models.wideresnet as models
+        model = models.build_wideresnet(depth=args.model_depth,
+                                        widen_factor=args.model_width,
+                                        dropout=0,
+                                        num_classes=args.num_classes)
+    elif args.arch == 'resnext':
+        import models.resnext as models
+        model = models.build_resnext(cardinality=args.model_cardinality,
+                                        depth=args.model_depth,
+                                        width=args.model_width,
+                                        num_classes=args.num_classes)
+    logger.info("Total params: {:.2f}M".format(sum(p.numel() for p in model.parameters())/1e6))
+    return model
 
 
 def get_cosine_schedule_with_warmup(optimizer,
@@ -122,41 +138,21 @@ def main():
                         "See details at https://nvidia.github.io/apex/amp.html")
     parser.add_argument("--local_rank", type=int, default=-1,
                         help="For distributed training: local_rank")
-    parser.add_argument('--no-progress', action='store_true',
-                        help="don't use progress bar")
 
     args = parser.parse_args()
     global best_acc
 
-    def create_model(args):
-        if args.arch == 'wideresnet':
-            import models.wideresnet as models
-            model = models.build_wideresnet(depth=args.model_depth,
-                                            widen_factor=args.model_width,
-                                            dropout=0,
-                                            num_classes=args.num_classes)
-        elif args.arch == 'resnext':
-            import models.resnext as models
-            model = models.build_resnext(cardinality=args.model_cardinality,
-                                         depth=args.model_depth,
-                                         width=args.model_width,
-                                         num_classes=args.num_classes)
-        logger.info("Total params: {:.2f}M".format(
-            sum(p.numel() for p in model.parameters())/1e6))
-        return model
-
-    if args.local_rank == -1:
-        device = torch.device('cuda', args.gpu_id)
-        args.world_size = 1
-        args.n_gpu = torch.cuda.device_count()
-    else:
-        torch.cuda.set_device(args.local_rank)
-        device = torch.device('cuda', args.local_rank)
+    if args.local_rank != -1:
+        args.gpu = args.local_rank
         torch.distributed.init_process_group(backend='nccl')
         args.world_size = torch.distributed.get_world_size()
         args.n_gpu = 1
+    else:
+        args.gpu = 0
+        args.world_size = 1
+        args.n_gpu = torch.cuda.device_count()
 
-    args.device = device
+    args.device = torch.device('cuda', args.gpu)
 
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s -   %(message)s",
@@ -199,8 +195,7 @@ def main():
             args.model_depth = 29
             args.model_width = 64
 
-    labeled_dataset, unlabeled_dataset, test_dataset = DATASET_GETTERS[args.dataset](
-        args, './data')
+    labeled_dataset, unlabeled_dataset, test_dataset = DATASET_GETTERS[args.dataset](args, './data')
 
     train_sampler = RandomSampler if args.local_rank == -1 else DistributedSampler
 
@@ -209,14 +204,14 @@ def main():
         sampler=train_sampler(labeled_dataset),
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        drop_last=True)
+        drop_last=True, pin_memory=True)
 
     unlabeled_trainloader = DataLoader(
         unlabeled_dataset,
         sampler=train_sampler(unlabeled_dataset),
         batch_size=args.batch_size*args.mu,
         num_workers=args.num_workers,
-        drop_last=True)
+        drop_last=True, pin_memory=True)
 
     test_loader = DataLoader(
         test_dataset,
@@ -245,8 +240,7 @@ def main():
                           momentum=0.9, nesterov=args.nesterov)
 
     args.epochs = math.ceil(args.total_steps / args.eval_step)
-    scheduler = get_cosine_schedule_with_warmup(
-        optimizer, args.warmup, args.total_steps)
+    scheduler = get_cosine_schedule_with_warmup(optimizer, args.warmup, args.total_steps)
 
     if args.use_ema:
         from models.ema import ModelEMA
@@ -256,15 +250,14 @@ def main():
 
     if args.resume:
         logger.info("==> Resuming from checkpoint..")
-        assert os.path.isfile(
-            args.resume), "Error: no checkpoint directory found!"
+        assert os.path.isfile(args.resume), "Error: no checkpoint directory found!"
         args.out = os.path.dirname(args.resume)
         checkpoint = torch.load(args.resume)
         best_acc = checkpoint['best_acc']
         args.start_epoch = checkpoint['epoch']
         model.load_state_dict(checkpoint['state_dict'])
         if args.use_ema:
-            ema_model.ema.load_state_dict(checkpoint['ema_state_dict'])
+            ema_model.load_state_dict(checkpoint['ema_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer'])
         scheduler.load_state_dict(checkpoint['scheduler'])
 
@@ -282,8 +275,7 @@ def main():
     logger.info(f"  Task = {args.dataset}@{args.num_labeled}")
     logger.info(f"  Num Epochs = {args.epochs}")
     logger.info(f"  Batch size per GPU = {args.batch_size}")
-    logger.info(
-        f"  Total train batch size = {args.batch_size*args.world_size}")
+    logger.info(f"  Total train batch size = {args.batch_size*args.world_size}")
     logger.info(f"  Total optimization steps = {args.total_steps}")
 
     model.zero_grad()
@@ -296,7 +288,6 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
     if args.amp:
         from apex import amp
     global best_acc
-    test_accs = []
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
@@ -310,9 +301,11 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
 
     model.train()
     for epoch in range(args.start_epoch, args.epochs):
-        if not args.no_progress:
-            p_bar = tqdm(range(args.eval_step),
-                         disable=args.local_rank not in [-1, 0])
+        if isinstance(labeled_trainloader.sampler, DistributedSampler):
+            labeled_trainloader.sampler.set_epoch(epoch)
+            unlabeled_trainloader.sampler.set_epoch(epoch)
+        
+        p_bar = tqdm(range(args.eval_step), disable=args.local_rank not in [-1, 0])
         for batch_idx in range(args.eval_step):
             try:
                 inputs_x, targets_x = labeled_iter.next()
@@ -328,11 +321,8 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
 
             data_time.update(time.time() - end)
             batch_size = inputs_x.shape[0]
-            inputs = interleave(
-                torch.cat((inputs_x, inputs_u_w, inputs_u_s)), 2*args.mu+1).to(args.device)
             targets_x = targets_x.to(args.device)
             logits = model(inputs)
-            logits = de_interleave(logits, 2*args.mu+1)
             logits_x = logits[:batch_size]
             logits_u_w, logits_u_s = logits[batch_size:].chunk(2)
             del logits
@@ -343,8 +333,7 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
             max_probs, targets_u = torch.max(pseudo_label, dim=-1)
             mask = max_probs.ge(args.threshold).float()
 
-            Lu = (F.cross_entropy(logits_u_s, targets_u,
-                                  reduction='none') * mask).mean()
+            Lu = (F.cross_entropy(logits_u_s, targets_u, reduction='none') * mask).mean()
 
             loss = Lx + args.lambda_u * Lu
 
@@ -360,32 +349,29 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
             optimizer.step()
             scheduler.step()
             if args.use_ema:
-                ema_model.update(model)
+                ema_model.update_parameters(model)
             model.zero_grad()
 
             batch_time.update(time.time() - end)
             end = time.time()
             mask_probs.update(mask.mean().item())
-            if not args.no_progress:
-                p_bar.set_description("Train Epoch: {epoch}/{epochs:4}. Iter: {batch:4}/{iter:4}. LR: {lr:.4f}. Data: {data:.3f}s. Batch: {bt:.3f}s. Loss: {loss:.4f}. Loss_x: {loss_x:.4f}. Loss_u: {loss_u:.4f}. Mask: {mask:.2f}. ".format(
-                    epoch=epoch + 1,
-                    epochs=args.epochs,
-                    batch=batch_idx + 1,
-                    iter=args.eval_step,
-                    lr=scheduler.get_last_lr()[0],
-                    data=data_time.avg,
-                    bt=batch_time.avg,
-                    loss=losses.avg,
-                    loss_x=losses_x.avg,
-                    loss_u=losses_u.avg,
-                    mask=mask_probs.avg))
-                p_bar.update()
-
-        if not args.no_progress:
-            p_bar.close()
+            p_bar.set_description("Train Epoch: {epoch}/{epochs:4}. Iter: {batch:4}/{iter:4}. LR: {lr:.4f}. Data: {data:.3f}s. Batch: {bt:.3f}s. Loss: {loss:.4f}. Loss_x: {loss_x:.4f}. Loss_u: {loss_u:.4f}. Mask: {mask:.2f}. ".format(
+                epoch=epoch + 1,
+                epochs=args.epochs,
+                batch=batch_idx + 1,
+                iter=args.eval_step,
+                lr=scheduler.get_last_lr()[0],
+                data=data_time.avg,
+                bt=batch_time.avg,
+                loss=losses.avg,
+                loss_x=losses_x.avg,
+                loss_u=losses_u.avg,
+                mask=mask_probs.avg))
+            p_bar.update()
+        p_bar.close()
 
         if args.use_ema:
-            test_model = ema_model.ema
+            test_model = ema_model
         else:
             test_model = model
 
@@ -402,24 +388,16 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
             is_best = test_acc > best_acc
             best_acc = max(test_acc, best_acc)
 
-            model_to_save = model.module if hasattr(model, "module") else model
-            if args.use_ema:
-                ema_to_save = ema_model.ema.module if hasattr(
-                    ema_model.ema, "module") else ema_model.ema
             save_checkpoint({
                 'epoch': epoch + 1,
-                'state_dict': model_to_save.state_dict(),
-                'ema_state_dict': ema_to_save.state_dict() if args.use_ema else None,
+                'state_dict': model.state_dict(),
+                'ema_state_dict': ema_model.state_dict() if args.use_ema else None,
                 'acc': test_acc,
                 'best_acc': best_acc,
                 'optimizer': optimizer.state_dict(),
                 'scheduler': scheduler.state_dict(),
             }, is_best, args.out)
-
-            test_accs.append(test_acc)
             logger.info('Best top-1 acc: {:.2f}'.format(best_acc))
-            logger.info('Mean top-1 acc: {:.2f}\n'.format(
-                np.mean(test_accs[-20:])))
 
     if args.local_rank in [-1, 0]:
         writer.close()
@@ -430,13 +408,10 @@ def test(args, test_loader, model, epoch):
     data_time = AverageMeter()
     losses = AverageMeter()
     top1 = AverageMeter()
-    top5 = AverageMeter()
+    top3 = AverageMeter()
     end = time.time()
 
-    if not args.no_progress:
-        test_loader = tqdm(test_loader,
-                           disable=args.local_rank not in [-1, 0])
-
+    test_loader = tqdm(test_loader, disable=args.local_rank not in [-1, 0])
     with torch.no_grad():
         for batch_idx, (inputs, targets) in enumerate(test_loader):
             data_time.update(time.time() - end)
@@ -447,27 +422,25 @@ def test(args, test_loader, model, epoch):
             outputs = model(inputs)
             loss = F.cross_entropy(outputs, targets)
 
-            prec1, prec5 = accuracy(outputs, targets, topk=(1, 5))
-            losses.update(loss.item(), inputs.shape[0])
-            top1.update(prec1.item(), inputs.shape[0])
-            top5.update(prec5.item(), inputs.shape[0])
+            prec1, prec5 = accuracy(outputs, targets, topk=(1, 3))
+            losses.update(loss.item())
+            top1.update(prec1.item())
+            top3.update(prec5.item())
             batch_time.update(time.time() - end)
             end = time.time()
-            if not args.no_progress:
-                test_loader.set_description("Test Iter: {batch:4}/{iter:4}. Data: {data:.3f}s. Batch: {bt:.3f}s. Loss: {loss:.4f}. top1: {top1:.2f}. top5: {top5:.2f}. ".format(
-                    batch=batch_idx + 1,
-                    iter=len(test_loader),
-                    data=data_time.avg,
-                    bt=batch_time.avg,
-                    loss=losses.avg,
-                    top1=top1.avg,
-                    top5=top5.avg,
-                ))
-        if not args.no_progress:
-            test_loader.close()
+            test_loader.set_description("Test Iter: {batch:4}/{iter:4}. Data: {data:.3f}s. Batch: {bt:.3f}s. Loss: {loss:.4f}. top1: {top1:.2f}. top3: {top3:.2f}. ".format(
+                batch=batch_idx + 1,
+                iter=len(test_loader),
+                data=data_time.avg,
+                bt=batch_time.avg,
+                loss=losses.avg,
+                top1=top1.avg,
+                top3=top3.avg,
+            ))
+        test_loader.close()
 
     logger.info("top-1 acc: {:.2f}".format(top1.avg))
-    logger.info("top-5 acc: {:.2f}".format(top5.avg))
+    logger.info("top-3 acc: {:.2f}".format(top3.avg))
     return losses.avg, top1.avg
 
 
