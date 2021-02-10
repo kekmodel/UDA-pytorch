@@ -11,6 +11,7 @@ import PIL.ImageOps
 import PIL.ImageEnhance
 import PIL.ImageDraw
 from PIL import Image
+from audioop import bias
 
 logger = logging.getLogger(__name__)
 
@@ -37,22 +38,35 @@ def Contrast(img, v, max_v, bias=0):
     return PIL.ImageEnhance.Contrast(img).enhance(v)
 
 
-def Cutout(img, v, max_v, bias=0):
+def Cutout(img, v, max_v, **kwarg):
     if v == 0:
         return img
-    v = _float_parameter(v, max_v) + bias
+    v = _float_parameter(v, max_v)
     v = int(v * min(img.size))
-    return CutoutAbs(img, v)
-
-
-def CutoutAbs(img, max_v, **kwarg):
     w, h = img.size
     x0 = np.random.uniform(0, w)
     y0 = np.random.uniform(0, h)
-    x0 = int(max(0, x0 - max_v / 2.))
-    y0 = int(max(0, y0 - max_v / 2.))
-    x1 = int(min(w, x0 + max_v))
-    y1 = int(min(h, y0 + max_v))
+    x0 = int(max(0, x0 - v / 2.))
+    y0 = int(max(0, y0 - v / 2.))
+    x1 = int(min(w, x0 + v))
+    y1 = int(min(h, y0 + v))
+    xy = (x0, y0, x1, y1)
+    # gray
+    color = (127, 127, 127)
+    img = img.copy()
+    PIL.ImageDraw.Draw(img).rectangle(xy, color)
+    return img
+
+
+def CutoutConst(img, v, max_v, **kwarg):
+    v = _int_parameter(v, max_v)
+    w, h = img.size
+    x0 = np.random.uniform(0, w)
+    y0 = np.random.uniform(0, h)
+    x0 = int(max(0, x0 - v / 2.))
+    y0 = int(max(0, y0 - v / 2.))
+    x1 = int(min(w, x0 + v))
+    y1 = int(min(h, y0 + v))
     xy = (x0, y0, x1, y1)
     # gray
     color = (127, 127, 127)
@@ -73,44 +87,44 @@ def Invert(img, **kwarg):
     return PIL.ImageOps.invert(img)
 
 
-def Posterize(img, v, max_v, bias=0):
+def Posterize(img, v, max_v, bias, **kwarg):
     v = _int_parameter(v, max_v) + bias
     return PIL.ImageOps.posterize(img, v)
 
 
-def Rotate(img, v, max_v, bias=0):
-    v = _int_parameter(v, max_v) + bias
+def Rotate(img, v, max_v, **kwarg):
+    v = _float_parameter(v, max_v)
     if random.random() < 0.5:
         v = -v
     return img.rotate(v)
 
 
-def Sharpness(img, v, max_v, bias=0):
+def Sharpness(img, v, max_v, bias):
     v = _float_parameter(v, max_v) + bias
     return PIL.ImageEnhance.Sharpness(img).enhance(v)
 
 
-def ShearX(img, v, max_v, bias=0):
-    v = _float_parameter(v, max_v) + bias
+def ShearX(img, v, max_v, **kwarg):
+    v = _float_parameter(v, max_v)
     if random.random() < 0.5:
         v = -v
     return img.transform(img.size, PIL.Image.AFFINE, (1, v, 0, 0, 1, 0), RESAMPLE_MODE)
 
 
-def ShearY(img, v, max_v, bias=0):
-    v = _float_parameter(v, max_v) + bias
+def ShearY(img, v, max_v, **kwarg):
+    v = _float_parameter(v, max_v)
     if random.random() < 0.5:
         v = -v
     return img.transform(img.size, PIL.Image.AFFINE, (1, 0, 0, v, 1, 0), RESAMPLE_MODE)
 
 
-def Solarize(img, v, max_v, bias=0):
-    v = _int_parameter(v, max_v) + bias
+def Solarize(img, v, max_v, **kwarg):
+    v = _int_parameter(v, max_v)
     return PIL.ImageOps.solarize(img, 256 - v)
 
 
-def SolarizeAdd(img, v, max_v, bias=0, threshold=128):
-    v = _int_parameter(v, max_v) + bias
+def SolarizeAdd(img, v, max_v, threshold=128, **kwarg):
+    v = _int_parameter(v, max_v)
     if random.random() < 0.5:
         v = -v
     img_np = np.array(img).astype(np.int)
@@ -121,32 +135,34 @@ def SolarizeAdd(img, v, max_v, bias=0, threshold=128):
     return PIL.ImageOps.solarize(img, threshold)
 
 
-def TranslateX(img, v, max_v, bias=0):
-    v = _float_parameter(v, max_v) + bias
+def TranslateX(img, v, max_v, **kwarg):
+    v = _float_parameter(v, max_v)
     if random.random() < 0.5:
         v = -v
     v = int(v * img.size[0])
     return img.transform(img.size, PIL.Image.AFFINE, (1, 0, v, 0, 1, 0), RESAMPLE_MODE)
 
 
-def TranslateY(img, v, max_v, bias=0):
-    v = _float_parameter(v, max_v) + bias
+def TranslateY(img, v, max_v, **kwarg):
+    v = _float_parameter(v, max_v)
     if random.random() < 0.5:
         v = -v
     v = int(v * img.size[1])
     return img.transform(img.size, PIL.Image.AFFINE, (1, 0, 0, 0, 1, v), RESAMPLE_MODE)
 
 
-def TranslateXAbs(img, max_v, **kwarg):
+def TranslateXConst(img, v, max_v, **kwarg):
+    v = _float_parameter(v, max_v)
     if random.random() > 0.5:
-        max_v = -max_v
-    return img.transform(img.size, PIL.Image.AFFINE, (1, 0, max_v, 0, 1, 0), RESAMPLE_MODE)
+        v = -v
+    return img.transform(img.size, PIL.Image.AFFINE, (1, 0, v, 0, 1, 0), RESAMPLE_MODE)
 
 
-def TranslateYAbs(img, max_v, **kwarg):
+def TranslateYConst(img, v, max_v, **kwarg):
+    v = _float_parameter(v, max_v)
     if random.random() > 0.5:
-        max_v = -max_v
-    return img.transform(img.size, PIL.Image.AFFINE, (1, 0, 0, 0, 1, max_v), RESAMPLE_MODE)
+        v = -v
+    return img.transform(img.size, PIL.Image.AFFINE, (1, 0, 0, 0, 1, v), RESAMPLE_MODE)
 
 
 def _float_parameter(v, max_v):
@@ -157,46 +173,22 @@ def _int_parameter(v, max_v):
     return int(v * max_v / PARAMETER_MAX)
 
 
-def fixmatch_augment_pool():
-    # FixMatch paper
-    augs = [(AutoContrast, None, None),
-            (Brightness, 0.9, 0.05),
-            (Color, 0.9, 0.05),
-            (Contrast, 0.9, 0.05),
-            (Equalize, None, None),
-            (Identity, None, None),
-            (Posterize, 4, 4),
-            (Rotate, 30, 0),
-            (Sharpness, 0.9, 0.05),
-            (ShearX, 0.3, 0),
-            (ShearY, 0.3, 0),
-            (Solarize, 256, 0),
-            (TranslateX, 0.3, 0),
-            (TranslateY, 0.3, 0)]
-    return augs
-
-
 def rand_augment_pool():
-    # Test
     augs = [(AutoContrast, None, None),
             (Brightness, 1.8, 0.1),
             (Color, 1.8, 0.1),
             (Contrast, 1.8, 0.1),
-            # (Cutout, 0.2, 0),
-            (CutoutAbs, 40, None),
+            (CutoutConst, 40, None),
             (Equalize, None, None),
             (Invert, None, None),
-            (Posterize, 4, 4),
-            (Rotate, 30, 0),
+            (Posterize, 4, 0),
+            (Rotate, 30, None),
             (Sharpness, 1.8, 0.1),
-            (ShearX, 0.3, 0),
-            (ShearY, 0.3, 0),
-            (Solarize, 256, 0),
-            (SolarizeAdd, 110, 0),
-            (TranslateX, 0.45, 0),
-            (TranslateY, 0.45, 0),
-            # (TranslateXAbs, 100, None),
-            # (TranslateYAbs, 100, None),
+            (ShearX, 0.3, None),
+            (ShearY, 0.3, None),
+            (Solarize, 256, None),
+            (TranslateXConst, 100, None),
+            (TranslateYConst, 100, None),
             ]
     return augs
 
@@ -204,7 +196,7 @@ def rand_augment_pool():
 class RandAugment(object):
     def __init__(self, n, m, resample_mode=PIL.Image.BILINEAR):
         assert n >= 1
-        assert 1 <= m <= 10
+        assert m >= 1
         global RESAMPLE_MODE
         RESAMPLE_MODE = resample_mode
         self.n = n
@@ -217,47 +209,4 @@ class RandAugment(object):
             prob = np.random.uniform(0.2, 0.8)
             if random.random() + prob >= 1:
                 img = op(img, v=self.m, max_v=max_v, bias=bias)
-        return img
-
-
-class RandAugmentPC(object):
-    def __init__(self, n, m, resample_mode=PIL.Image.BILINEAR):
-        assert n >= 1
-        assert 1 <= m <= 10
-        global RESAMPLE_MODE
-        RESAMPLE_MODE = resample_mode
-        self.n = n
-        self.m = m
-        self.augment_pool = rand_augment_pool()
-
-    def __call__(self, img):
-        ops = random.choices(self.augment_pool, k=self.n)
-        for op, max_v, bias in ops:
-            prob = np.random.uniform(0.2, 0.8)
-            if random.random() + prob >= 1:
-                img = op(img, v=self.m, max_v=max_v, bias=bias)
-        # img = CutoutAbs(img, 16)
-        # cv = np.random.randint(1, self.m)
-        img = Cutout(img, self.m, 0.5)
-        return img
-
-
-class RandAugmentMC(object):
-    def __init__(self, n, m, resample_mode=PIL.Image.BILINEAR):
-        assert n >= 1
-        assert 1 <= m <= 10
-        global RESAMPLE_MODE
-        RESAMPLE_MODE = resample_mode
-        self.n = n
-        self.m = m
-        self.augment_pool = fixmatch_augment_pool()
-
-    def __call__(self, img):
-        ops = random.choices(self.augment_pool, k=self.n)
-        for op, max_v, bias in ops:
-            v = np.random.randint(1, self.m)
-            if random.random() < 0.5:
-                img = op(img, v=v, max_v=max_v, bias=bias)
-        # img = CutoutAbs(img, 16)
-        img = Cutout(img, self.m, 0.5)
         return img

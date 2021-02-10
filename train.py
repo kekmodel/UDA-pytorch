@@ -49,9 +49,9 @@ def create_model(args):
     elif args.arch == 'resnext':
         import models.resnext as models
         model = models.build_resnext(cardinality=args.model_cardinality,
-                                        depth=args.model_depth,
-                                        width=args.model_width,
-                                        num_classes=args.num_classes)
+                                     depth=args.model_depth,
+                                     width=args.model_width,
+                                     num_classes=args.num_classes)
     logger.info("Total params: {:.2f}M".format(sum(p.numel() for p in model.parameters())/1e6))
     return model
 
@@ -121,9 +121,9 @@ def main():
                         help='coefficient of unlabeled batch size')
     parser.add_argument('--lambda-u', default=1, type=float,
                         help='coefficient of unlabeled loss')
-    parser.add_argument('--T', default=1, type=float,
+    parser.add_argument('--T', default=0.4, type=float,
                         help='pseudo label temperature')
-    parser.add_argument('--threshold', default=0.95, type=float,
+    parser.add_argument('--threshold', default=0.8, type=float,
                         help='pseudo label threshold')
     parser.add_argument('--out', default='result',
                         help='directory to output the result')
@@ -194,7 +194,13 @@ def main():
             args.model_depth = 29
             args.model_width = 64
 
+    if args.local_rank not in [-1, 0]:
+        torch.distributed.barrier()
+
     labeled_dataset, unlabeled_dataset, test_dataset = DATASET_GETTERS[args.dataset](args, './data')
+
+    if args.local_rank == 0:
+        torch.distributed.barrier()
 
     train_sampler = RandomSampler if args.local_rank == -1 else DistributedSampler
 
@@ -294,32 +300,42 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
     losses_u = AverageMeter()
     mask_probs = AverageMeter()
     end = time.time()
+    model.train()
+
+    if args.world_size > 1:
+        labeled_epoch = 0
+        unlabeled_epoch = 0
+        labeled_trainloader.sampler.set_epoch(labeled_epoch)
+        unlabeled_trainloader.sampler.set_epoch(unlabeled_epoch)
 
     labeled_iter = iter(labeled_trainloader)
     unlabeled_iter = iter(unlabeled_trainloader)
-
-    model.train()
     for epoch in range(args.start_epoch, args.epochs):
-        if isinstance(labeled_trainloader.sampler, DistributedSampler):
-            labeled_trainloader.sampler.set_epoch(epoch)
-            unlabeled_trainloader.sampler.set_epoch(epoch)
-        
         p_bar = tqdm(range(args.eval_step), disable=args.local_rank not in [-1, 0])
         for batch_idx in range(args.eval_step):
             try:
                 inputs_x, targets_x = labeled_iter.next()
             except:
+                if args.world_size > 1:
+                    labeled_epoch += 1
+                    labeled_trainloader.sampler.set_epoch(labeled_epoch)
+
                 labeled_iter = iter(labeled_trainloader)
                 inputs_x, targets_x = labeled_iter.next()
 
             try:
                 (inputs_u_w, inputs_u_s), _ = unlabeled_iter.next()
             except:
+                if args.world_size > 1:
+                    unlabeled_epoch += 1
+                    unlabeled_trainloader.sampler.set_epoch(unlabeled_epoch)
+
                 unlabeled_iter = iter(unlabeled_trainloader)
                 (inputs_u_w, inputs_u_s), _ = unlabeled_iter.next()
 
             data_time.update(time.time() - end)
             batch_size = inputs_x.shape[0]
+            inputs = torch.cat((inputs_x, inputs_u_w, inputs_u_s)).to(args.device)
             targets_x = targets_x.to(args.device)
             logits = model(inputs)
             logits_x = logits[:batch_size]
@@ -328,11 +344,11 @@ def train(args, labeled_trainloader, unlabeled_trainloader, test_loader,
 
             Lx = F.cross_entropy(logits_x, targets_x, reduction='mean')
 
-            pseudo_label = torch.softmax(logits_u_w.detach()/args.T, dim=-1)
-            max_probs, targets_u = torch.max(pseudo_label, dim=-1)
+            targets_u = torch.softmax(logits_u_w.detach()/args.T, dim=-1)
+            max_probs, _ = torch.max(targets_u, dim=-1)
             mask = max_probs.ge(args.threshold).float()
 
-            Lu = (F.cross_entropy(logits_u_s, targets_u, reduction='none') * mask).mean()
+            Lu = (-(targets_u * torch.log_softmax(logits_u_s, dim=-1)).sum(dim=-1) * mask).mean()
 
             loss = Lx + args.lambda_u * Lu
 
@@ -409,12 +425,11 @@ def test(args, test_loader, model, epoch):
     top1 = AverageMeter()
     top3 = AverageMeter()
     end = time.time()
-
+    model.eval()
     test_loader = tqdm(test_loader, disable=args.local_rank not in [-1, 0])
     with torch.no_grad():
         for batch_idx, (inputs, targets) in enumerate(test_loader):
             data_time.update(time.time() - end)
-            model.eval()
 
             inputs = inputs.to(args.device)
             targets = targets.to(args.device)
