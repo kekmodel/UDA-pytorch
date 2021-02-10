@@ -8,7 +8,7 @@ This code is only available in UDA for image classifications.
 ## Results
 
 |  | CIFAR-10-4K | SVHN-1K |
-|:---:|:---:|:---:|:---:|
+|:---:|:---:|:---:|
 | Paper (WRN-28-2) | 95.68 ± 0.08 | 97.77 ± 0.07 |
 | This code (WRN-28-2) | - | - |
 | Acc. curve | - | - |
