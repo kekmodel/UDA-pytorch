@@ -13,7 +13,7 @@ This code is only available in UDA for image classifications.
 | This code (WRN-28-2) | - | - |
 | Acc. curve | - | - |
 
-\* This code only modifies small parts of [my FixMatch code](https://github.com/kekmodel/FixMatch-pytorch), which has been tested many times, so I expect it to work, but I haven't tested it.
+\* Although this code has not been tested, it is expected to work because only a small part of [my FixMatch code](https://github.com/kekmodel/FixMatch-pytorch), which has been tested several times, has been modified.
 
 ## Requirements
 - python 3.6+
